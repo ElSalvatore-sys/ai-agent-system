@@ -1,0 +1,302 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker
+  namespace: llm-system
+  labels:
+    app: celery-worker
+    component: worker
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: celery-worker
+  template:
+    metadata:
+      labels:
+        app: celery-worker
+        component: worker
+    spec:
+      initContainers:
+      - name: wait-for-redis
+        image: redis:7-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until redis-cli -h redis-service -p 6379 ping; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+          echo "Redis is ready!"
+      containers:
+      - name: celery-worker
+        image: llm-system/api:latest
+        command:
+        - celery
+        - -A
+        - app.services.celery_app
+        - worker
+        - --loglevel=info
+        - --concurrency=4
+        - --queues=model_management,scaling,monitoring,cleanup,default
+        env:
+        - name: CELERY_BROKER_URL
+          value: "redis://redis-service:6379"
+        - name: CELERY_RESULT_BACKEND
+          value: "redis://redis-service:6379"
+        - name: DATABASE_URL
+          value: "postgresql+asyncpg://llm_user:llm_password_change_in_production@postgres-service:5432/llm_database"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        - name: OLLAMA_HOST
+          value: "http://ollama-service:11434"
+        - name: HF_LOCAL_HOST
+          value: "http://hf-service:8080"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2
+            memory: 4Gi
+        livenessProbe:
+          exec:
+            command:
+            - celery
+            - -A
+            - app.services.celery_app
+            - inspect
+            - ping
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+        - name: model-data
+          mountPath: /var/lib/llm-models
+      volumes:
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+      - name: model-data
+        persistentVolumeClaim:
+          claimName: model-data-pvc
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      serviceAccountName: llm-api-service-account
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat
+  namespace: llm-system
+  labels:
+    app: celery-beat
+    component: scheduler
+spec:
+  replicas: 1  # Only one scheduler needed
+  strategy:
+    type: Recreate  # Prevent multiple schedulers
+  selector:
+    matchLabels:
+      app: celery-beat
+  template:
+    metadata:
+      labels:
+        app: celery-beat
+        component: scheduler
+    spec:
+      initContainers:
+      - name: wait-for-redis
+        image: redis:7-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until redis-cli -h redis-service -p 6379 ping; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+          echo "Redis is ready!"
+      containers:
+      - name: celery-beat
+        image: llm-system/api:latest
+        command:
+        - celery
+        - -A
+        - app.services.celery_app
+        - beat
+        - --loglevel=info
+        - --schedule=/tmp/celerybeat-schedule
+        env:
+        - name: CELERY_BROKER_URL
+          value: "redis://redis-service:6379"
+        - name: CELERY_RESULT_BACKEND
+          value: "redis://redis-service:6379"
+        - name: DATABASE_URL
+          value: "postgresql+asyncpg://llm_user:llm_password_change_in_production@postgres-service:5432/llm_database"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          exec:
+            command:
+            - pgrep
+            - -f
+            - celery.*beat
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: celery-schedule
+          mountPath: /tmp
+      volumes:
+      - name: celery-schedule
+        emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-flower
+  namespace: llm-system
+  labels:
+    app: celery-flower
+    component: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-flower
+  template:
+    metadata:
+      labels:
+        app: celery-flower
+        component: monitoring
+    spec:
+      containers:
+      - name: celery-flower
+        image: llm-system/api:latest
+        command:
+        - celery
+        - -A
+        - app.services.celery_app
+        - flower
+        - --port=5555
+        - --broker=redis://redis-service:6379
+        ports:
+        - containerPort: 5555
+          name: http
+        env:
+        - name: CELERY_BROKER_URL
+          value: "redis://redis-service:6379"
+        - name: CELERY_RESULT_BACKEND
+          value: "redis://redis-service:6379"
+        - name: FLOWER_BASIC_AUTH
+          value: "admin:flower-password-change-in-production"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5555
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5555
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: celery-flower-service
+  namespace: llm-system
+  labels:
+    app: celery-flower
+    component: monitoring
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5555
+    targetPort: 5555
+    protocol: TCP
+    name: http
+  selector:
+    app: celery-flower
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: celery-worker-hpa
+  namespace: llm-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: celery-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60

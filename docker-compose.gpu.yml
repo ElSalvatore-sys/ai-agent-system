@@ -1,0 +1,18 @@
+# GPU-enabled override for Docker Compose
+# Use: docker-compose -f docker-compose.local.yml -f docker-compose.gpu.yml up
+
+version: '3.8'
+
+services:
+  # Ollama with GPU support
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility

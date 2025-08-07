@@ -1,0 +1,24 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files first for better caching
+COPY package*.json ./
+
+# Clear npm cache and install dependencies
+RUN npm cache clean --force
+RUN npm install --legacy-peer-deps
+
+# Copy the rest of the application
+COPY . .
+
+# Expose the correct port (8080 as specified in package.json)
+EXPOSE 8080
+
+# Set environment variables for development
+ENV NODE_ENV=development
+ENV VITE_API_URL=http://localhost:8000/api
+ENV VITE_WS_URL=http://localhost:8000
+
+# Start the development server
+CMD ["npm", "run", "dev"]

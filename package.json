@@ -1,0 +1,51 @@
+{
+  "name": "ai-agent-system",
+  "version": "1.0.0",
+  "description": "A modern AI agent system with React TypeScript frontend and FastAPI Python backend",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:docker": "docker-compose up --build",
+    "prod": "docker-compose -f docker-compose.prod.yml up --build",
+    "stop": "docker-compose down",
+    "install": "npm run install:frontend && npm run install:backend",
+    "install:frontend": "cd frontend && npm install",
+    "install:backend": "cd backend && pip install -r requirements.txt",
+    "build": "npm run build:frontend",
+    "build:frontend": "cd frontend && npm run build",
+    "preview": "cd frontend && npm run preview",
+    "test": "npm run test:frontend",
+    "test:frontend": "cd frontend && npm test",
+    "lint": "npm run lint:frontend",
+    "lint:frontend": "cd frontend && npm run lint",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && python -m uvicorn main:app --reload --host 0.0.0.0"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "react",
+    "typescript",
+    "fastapi",
+    "python",
+    "docker"
+  ],
+  "author": "AI Agent System Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/ai-agent-system.git"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "python": ">=3.12"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "dependencies": {
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "framer-motion": "^12.23.12",
+    "react-dropzone": "^14.3.8",
+    "react-syntax-highlighter": "^15.6.1"
+  }
+}

@@ -1,0 +1,355 @@
+# Default values for llm-optimization-system
+# This is a YAML-formatted file.
+
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+
+# Image configuration
+image:
+  registry: docker.io
+  repository: llm-optimization
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Service account configuration
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Security context
+podSecurityContext:
+  fsGroup: 2000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Resource configuration
+resources:
+  modelLoadingOptimizer:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+  
+  gpuCpuOptimizer:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+      nvidia.com/gpu: 0
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+  
+  advancedCaching:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+  
+  autoScaling:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+  
+  deploymentAutomation:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+  
+  monitoringAlerting:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+# Replica configuration
+replicaCount:
+  modelLoadingOptimizer: 2
+  gpuCpuOptimizer: 1
+  advancedCaching: 2
+  autoScaling: 1
+  deploymentAutomation: 1
+  monitoringAlerting: 2
+
+# Autoscaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  metricsPort: 9090
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: llm-optimization.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Storage configuration
+persistence:
+  modelCache:
+    enabled: true
+    storageClass: "fast-ssd"
+    accessMode: ReadWriteMany
+    size: 100Gi
+    annotations: {}
+  
+  deploymentArtifacts:
+    enabled: true
+    storageClass: "standard"
+    accessMode: ReadWriteMany
+    size: 50Gi
+    annotations: {}
+
+# Configuration for individual components
+modelLoadingOptimizer:
+  enabled: true
+  config:
+    lazyUnloadTimeout: 600
+    batchTimeout: 0.1
+    maxMemoryUsage: 0.8
+    defaultQuantization: "int8"
+    maxBatchSize: 4
+
+gpuCpuOptimizer:
+  enabled: true
+  config:
+    memorySafetyMargin: 0.1
+    gpuUtilizationThreshold: 0.8
+    temperatureThreshold: 85.0
+    cudaMemoryFraction: 0.9
+    enableTf32: true
+    enableCudnnBenchmark: true
+  
+  # GPU node selector
+  nodeSelector:
+    accelerator: nvidia-tesla-k80
+  
+  # Toleration for GPU nodes
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+advancedCaching:
+  enabled: true
+  config:
+    maxMemoryCacheSize: 1000
+    maxModelWeightCacheGb: 50.0
+    semanticSimilarityThreshold: 0.8
+    predictiveCacheEnabled: true
+    compressionThreshold: 1024
+
+autoScaling:
+  enabled: true
+  config:
+    defaultCpuThresholdUp: 70.0
+    defaultCpuThresholdDown: 30.0
+    defaultMemoryThresholdUp: 80.0
+    defaultMemoryThresholdDown: 40.0
+    defaultCooldownSeconds: 300
+    maxScalingActionsPerHour: 10
+    predictionHorizonMinutes: 60
+    costBudgetHourly: 100.0
+
+deploymentAutomation:
+  enabled: true
+  config:
+    deploymentTimeout: 1800
+    healthCheckRetries: 10
+    healthCheckInterval: 30
+    autoRollbackEnabled: true
+    notificationEnabled: true
+  
+  # Docker-in-Docker configuration
+  dockerDind:
+    enabled: true
+    image:
+      repository: docker
+      tag: dind
+      pullPolicy: IfNotPresent
+
+monitoringAlerting:
+  enabled: true
+  config:
+    metricsRetentionHours: 168
+    optimizationIntervalMinutes: 60
+    dashboardRefreshInterval: 30
+    prometheusPort: 9090
+    alertEvaluationInterval: 60
+
+# External dependencies
+redis:
+  enabled: true
+  auth:
+    enabled: true
+    password: "change-me-in-production"
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+  replica:
+    replicaCount: 2
+    persistence:
+      enabled: true
+      size: 8Gi
+
+# Monitoring stack
+monitoring:
+  prometheus:
+    enabled: true
+    server:
+      persistentVolume:
+        enabled: true
+        size: 20Gi
+    alertmanager:
+      enabled: true
+      persistentVolume:
+        enabled: true
+        size: 2Gi
+  
+  grafana:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 1Gi
+    adminPassword: "admin"
+    dashboards:
+      default:
+        llm-optimization:
+          url: https://raw.githubusercontent.com/your-org/llm-optimization-system/main/dashboards/llm-optimization.json
+  
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Network policies
+networkPolicies:
+  enabled: true
+  ingress:
+    enabled: true
+    from:
+      - namespaceSelector:
+          matchLabels:
+            name: llm-optimization
+      - namespaceSelector:
+          matchLabels:
+            name: monitoring
+  egress:
+    enabled: true
+    to:
+      - namespaceSelector:
+          matchLabels:
+            name: llm-optimization
+    ports:
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 443
+      - protocol: TCP
+        port: 6379
+
+# Pod disruption budgets
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Node affinity and tolerations
+nodeAffinity: {}
+tolerations: []
+podAntiAffinity:
+  enabled: true
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Secrets configuration
+secrets:
+  redisPassword: ""
+  slackWebhookUrl: ""
+  openaiApiKey: ""
+  anthropicApiKey: ""
+
+# Environment-specific configurations
+environments:
+  development:
+    replicaCount:
+      modelLoadingOptimizer: 1
+      advancedCaching: 1
+      monitoringAlerting: 1
+    resources:
+      modelLoadingOptimizer:
+        requests:
+          memory: "1Gi"
+          cpu: "500m"
+        limits:
+          memory: "2Gi"
+          cpu: "1000m"
+  
+  staging:
+    replicaCount:
+      modelLoadingOptimizer: 2
+      advancedCaching: 2
+      monitoringAlerting: 2
+  
+  production:
+    replicaCount:
+      modelLoadingOptimizer: 3
+      advancedCaching: 3
+      monitoringAlerting: 3
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 20

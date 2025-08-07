@@ -1,0 +1,553 @@
+name: LLM Optimization System CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/*'
+      - 'hotfix/*'
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      skip_tests:
+        description: 'Skip tests'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  # Code Quality and Security
+  code-quality:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r backend/requirements.txt
+        pip install black isort flake8 mypy bandit safety pytest-cov
+    
+    - name: Code formatting check
+      run: |
+        black --check backend/
+        isort --check-only backend/
+    
+    - name: Lint with flake8
+      run: |
+        flake8 backend/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 backend/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    
+    - name: Type checking with mypy
+      run: |
+        mypy backend/app --ignore-missing-imports
+    
+    - name: Security scan with bandit
+      run: |
+        bandit -r backend/app -f json -o bandit-report.json || true
+    
+    - name: Dependency vulnerability scan
+      run: |
+        safety check --json --output safety-report.json || true
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+
+  # Unit and Integration Tests
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_tests }}
+    strategy:
+      matrix:
+        test-type: [unit, integration, performance]
+    
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r backend/requirements.txt
+        pip install pytest pytest-cov pytest-xdist pytest-mock
+    
+    - name: Run unit tests
+      if: matrix.test-type == 'unit'
+      run: |
+        cd backend
+        pytest tests/unit/ -v --cov=app --cov-report=xml --cov-report=html --junitxml=pytest-unit.xml
+    
+    - name: Run integration tests
+      if: matrix.test-type == 'integration'
+      env:
+        DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+        REDIS_URL: redis://localhost:6379/0
+      run: |
+        cd backend
+        pytest tests/integration/ -v --junitxml=pytest-integration.xml
+    
+    - name: Run performance tests
+      if: matrix.test-type == 'performance'
+      run: |
+        cd backend
+        pytest tests/performance/ -v --junitxml=pytest-performance.xml
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-${{ matrix.test-type }}
+        path: |
+          backend/pytest-*.xml
+          backend/htmlcov/
+          backend/coverage.xml
+
+  # Build Container Images
+  build:
+    name: Build Images
+    runs-on: ubuntu-latest
+    needs: [code-quality, test]
+    if: always() && (needs.code-quality.result == 'success' && (needs.test.result == 'success' || inputs.skip_tests))
+    
+    strategy:
+      matrix:
+        component:
+          - model-loading-optimizer
+          - gpu-cpu-optimizer
+          - advanced-caching-system
+          - auto-scaling-system
+          - deployment-automation
+          - monitoring-alerting-system
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.component }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: backend/docker/Dockerfile.${{ matrix.component }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+  # Container Security Scanning
+  security-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    if: always() && needs.build.result == 'success'
+    
+    strategy:
+      matrix:
+        component:
+          - model-loading-optimizer
+          - gpu-cpu-optimizer
+          - advanced-caching-system
+          - auto-scaling-system
+          - deployment-automation
+          - monitoring-alerting-system
+    
+    steps:
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.component }}:${{ github.sha }}
+        format: 'sarif'
+        output: 'trivy-results-${{ matrix.component }}.sarif'
+    
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results-${{ matrix.component }}.sarif'
+
+  # Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+    if: github.ref == 'refs/heads/develop' || github.event_name == 'workflow_dispatch'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: '1.28.0'
+    
+    - name: Configure kubectl
+      run: |
+        echo "${{ secrets.KUBECONFIG_STAGING }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+    
+    - name: Deploy to staging
+      env:
+        KUBECONFIG: kubeconfig
+      run: |
+        helm upgrade --install llm-optimization-staging ./backend/k8s/helm-chart \
+          --namespace llm-optimization-staging \
+          --create-namespace \
+          --values ./backend/k8s/helm-chart/values-staging.yaml \
+          --set global.imageTag=${{ github.sha }} \
+          --set secrets.redisPassword="${{ secrets.REDIS_PASSWORD }}" \
+          --set secrets.slackWebhookUrl="${{ secrets.SLACK_WEBHOOK_URL }}" \
+          --wait --timeout=600s
+    
+    - name: Run deployment tests
+      env:
+        KUBECONFIG: kubeconfig
+      run: |
+        # Wait for pods to be ready
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=llm-optimization-staging -n llm-optimization-staging --timeout=300s
+        
+        # Run smoke tests
+        kubectl run smoke-test --rm -i --restart=Never --image=curlimages/curl:latest -n llm-optimization-staging -- \
+          curl -f http://monitoring-alerting-service/health
+    
+    - name: Notify deployment status
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        text: 'Staging deployment ${{ job.status }}'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Deploy to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: '1.28.0'
+    
+    - name: Configure kubectl
+      run: |
+        echo "${{ secrets.KUBECONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+    
+    - name: Create backup
+      env:
+        KUBECONFIG: kubeconfig
+      run: |
+        # Backup current deployment
+        kubectl get all -n llm-optimization-production -o yaml > backup-$(date +%Y%m%d-%H%M%S).yaml
+    
+    - name: Blue-Green Deployment
+      env:
+        KUBECONFIG: kubeconfig
+      run: |
+        # Deploy to green environment
+        helm upgrade --install llm-optimization-green ./backend/k8s/helm-chart \
+          --namespace llm-optimization-green \
+          --create-namespace \
+          --values ./backend/k8s/helm-chart/values-production.yaml \
+          --set global.imageTag=${{ github.sha }} \
+          --set secrets.redisPassword="${{ secrets.REDIS_PASSWORD_PROD }}" \
+          --set secrets.slackWebhookUrl="${{ secrets.SLACK_WEBHOOK_URL }}" \
+          --wait --timeout=600s
+    
+    - name: Health check and traffic switch
+      env:
+        KUBECONFIG: kubeconfig
+      run: |
+        # Wait for green environment to be healthy
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=llm-optimization-green -n llm-optimization-green --timeout=300s
+        
+        # Run comprehensive health checks
+        ./scripts/production-health-check.sh llm-optimization-green
+        
+        # Switch traffic (this would typically involve load balancer configuration)
+        echo "Switching traffic to green environment"
+        
+        # Scale down blue environment after successful switch
+        if kubectl get namespace llm-optimization-production; then
+          helm uninstall llm-optimization-production -n llm-optimization-production || true
+          kubectl delete namespace llm-optimization-production --ignore-not-found=true
+        fi
+        
+        # Rename green to production
+        kubectl create namespace llm-optimization-production --dry-run=client -o yaml | kubectl apply -f -
+        helm uninstall llm-optimization-green -n llm-optimization-green
+        helm install llm-optimization-production ./backend/k8s/helm-chart \
+          --namespace llm-optimization-production \
+          --values ./backend/k8s/helm-chart/values-production.yaml \
+          --set global.imageTag=${{ github.sha }} \
+          --set secrets.redisPassword="${{ secrets.REDIS_PASSWORD_PROD }}" \
+          --set secrets.slackWebhookUrl="${{ secrets.SLACK_WEBHOOK_URL }}"
+    
+    - name: Post-deployment verification
+      env:
+        KUBECONFIG: kubeconfig
+      run: |
+        # Verify all components are healthy
+        kubectl get pods -n llm-optimization-production
+        kubectl top pods -n llm-optimization-production
+        
+        # Run production smoke tests
+        ./scripts/production-smoke-tests.sh
+    
+    - name: Notify deployment status
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        text: 'Production deployment ${{ job.status }}'
+        channel: '#alerts'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Rollback workflow
+  rollback:
+    name: Rollback Production
+    runs-on: ubuntu-latest
+    if: failure()
+    needs: deploy-production
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: '1.28.0'
+    
+    - name: Configure kubectl
+      run: |
+        echo "${{ secrets.KUBECONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+    
+    - name: Automatic rollback
+      env:
+        KUBECONFIG: kubeconfig
+      run: |
+        # Get previous successful deployment
+        PREVIOUS_REVISION=$(helm history llm-optimization-production -n llm-optimization-production --max 2 -o json | jq -r '.[1].revision // empty')
+        
+        if [ -n "$PREVIOUS_REVISION" ]; then
+          echo "Rolling back to revision $PREVIOUS_REVISION"
+          helm rollback llm-optimization-production $PREVIOUS_REVISION -n llm-optimization-production --wait --timeout=300s
+        else
+          echo "No previous revision found for rollback"
+          exit 1
+        fi
+    
+    - name: Verify rollback
+      env:
+        KUBECONFIG: kubeconfig
+      run: |
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=llm-optimization-production -n llm-optimization-production --timeout=300s
+        ./scripts/production-health-check.sh llm-optimization-production
+    
+    - name: Notify rollback
+      uses: 8398a7/action-slack@v3
+      with:
+        status: 'warning'
+        text: 'Production rollback completed due to deployment failure'
+        channel: '#alerts'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Performance Testing
+  performance-test:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/develop'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install performance testing tools
+      run: |
+        pip install locust pytest-benchmark
+    
+    - name: Run load tests
+      env:
+        TARGET_URL: https://llm-optimization-staging.yourcompany.com
+      run: |
+        cd tests/performance
+        locust -f load_test.py --host=$TARGET_URL --users 100 --spawn-rate 10 --run-time 300s --html report.html --csv results
+    
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-results
+        path: |
+          tests/performance/report.html
+          tests/performance/results*.csv
+
+  # Release
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.ref == 'refs/heads/main'
+    
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Generate changelog from git commits
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+        if [ -n "$LAST_TAG" ]; then
+          CHANGELOG=$(git log --pretty=format:"- %s" $LAST_TAG..HEAD)
+        else
+          CHANGELOG=$(git log --pretty=format:"- %s" HEAD)
+        fi
+        echo "changelog<<EOF" >> $GITHUB_OUTPUT
+        echo "$CHANGELOG" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+    
+    - name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ github.run_number }}
+        release_name: Release v${{ github.run_number }}
+        body: |
+          ## Changes
+          ${{ steps.changelog.outputs.changelog }}
+          
+          ## Deployment
+          This release has been automatically deployed to production.
+          
+          ## Container Images
+          All container images are available at: `ghcr.io/${{ github.repository }}`
+        draft: false
+        prerelease: false

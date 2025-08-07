@@ -1,0 +1,3 @@
+@echo off
+echo Stopping AI Agent System...
+docker-compose down

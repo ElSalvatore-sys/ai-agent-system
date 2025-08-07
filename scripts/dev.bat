@@ -1,0 +1,3 @@
+@echo off
+echo Starting AI Agent System in development mode...
+docker-compose up --build

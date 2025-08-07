@@ -1,0 +1,3 @@
+@echo off
+echo Starting AI Agent System in production mode...
+docker-compose -f docker-compose.prod.yml up --build

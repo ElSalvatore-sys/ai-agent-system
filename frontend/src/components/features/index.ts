@@ -1,0 +1,22 @@
+// Feature Components exports
+export { ChatMessage } from './ChatMessage';
+export { ChatInput } from './ChatInput';
+export { Sidebar } from './Sidebar';
+export { StatsCard } from './StatsCard';
+export { MultiAIModelSelector } from './MultiAIModelSelector';
+export { SmartModelSelector } from './SmartModelSelector';
+export { LocalModelSelector } from './LocalModelSelector';
+export { EnhancedChatInterface } from './EnhancedChatInterface';
+export { CodeViewer } from './CodeViewer';
+export { EnhancedDashboard } from './EnhancedDashboard';
+export { MultiModelComparison } from './MultiModelComparison';
+export { CostTracker } from './CostTracker';
+export { ContextPanel } from './ContextPanel';
+export { AnalyticsDashboard } from './AnalyticsDashboard';
+export { PerformanceMonitor } from './PerformanceMonitor';
+export { PerformanceIndicators } from './PerformanceIndicators';
+export { AdvancedConfigPanel } from './AdvancedConfigPanel';
+export { Notifications } from './Notifications';
+export { ResourceUsageChart } from './ResourceUsageChart';
+export { CostSavingsChart } from './CostSavingsChart';
+export { ModelPerformanceTable } from './ModelPerformanceTable';

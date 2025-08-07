@@ -1,0 +1,46 @@
+import React from 'react';
+import { Routes, Route } from 'react-router-dom';
+import { ErrorBoundary } from '@/components/ui';
+import { useTheme } from '@/context/providers/ThemeContext';
+import { cn } from '@/utils/helpers';
+import { DashboardLayout } from '@/components/layout/DashboardLayout';
+import { ComponentShowcase } from '@/components/demo/ComponentShowcase';
+import { 
+  Dashboard, 
+  Chat, 
+  Analytics, 
+  Settings, 
+  EnhancedChat, 
+  EnhancedDashboardPage,
+  MultiModelPage
+} from '@/pages';
+import { MonitoringDashboard } from '@/pages/MonitoringDashboard';
+
+function App() {
+  const { resolvedTheme } = useTheme();
+
+  return (
+    <ErrorBoundary>
+      <div className={cn("h-screen bg-background text-foreground", resolvedTheme)}>
+        <DashboardLayout>
+          <Routes>
+            {/* Enhanced components */}
+            <Route path="/" element={<EnhancedDashboardPage />} />
+            <Route path="/enhanced-chat" element={<EnhancedChat />} />
+            <Route path="/multi-model" element={<MultiModelPage />} />
+            <Route path="/showcase" element={<ComponentShowcase />} />
+            <Route path="/monitoring" element={<MonitoringDashboard />} />
+            
+            {/* Original components */}
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/chat" element={<Chat />} />
+            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </DashboardLayout>
+      </div>
+    </ErrorBoundary>
+  );
+}
+
+export default App;

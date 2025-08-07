@@ -1,0 +1,41 @@
+apiVersion: v2
+name: llm-optimization-system
+description: A Helm chart for enterprise-grade LLM optimization and deployment system
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - llm
+  - ai
+  - optimization
+  - machine-learning
+  - gpu
+  - scaling
+  - monitoring
+
+home: https://github.com/your-org/llm-optimization-system
+sources:
+  - https://github.com/your-org/llm-optimization-system
+
+maintainers:
+  - name: AI Infrastructure Team
+    email: ai-infra@yourcompany.com
+
+annotations:
+  category: AI/ML
+  licenses: Apache-2.0
+
+dependencies:
+  - name: redis
+    version: "17.3.7"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: prometheus
+    version: "15.16.1"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: monitoring.prometheus.enabled
+  - name: grafana
+    version: "6.43.5"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: monitoring.grafana.enabled

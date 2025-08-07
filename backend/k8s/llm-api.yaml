@@ -1,0 +1,249 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-api-config
+  namespace: llm-system
+data:
+  .env: |
+    # Environment configuration for LLM API
+    
+    # Application
+    PROJECT_NAME=AI Agent System
+    VERSION=1.0.0
+    API_V1_STR=/api/v1
+    ENVIRONMENT=production
+    DEBUG=false
+    
+    # Database
+    DATABASE_URL=postgresql+asyncpg://llm_user:llm_password_change_in_production@postgres-service:5432/llm_database
+    
+    # Redis
+    REDIS_URL=redis://redis-service:6379
+    
+    # CORS
+    CORS_ORIGINS=http://localhost:7000,http://localhost:7001,https://llm-frontend-service
+    
+    # Security
+    SECRET_KEY=your-production-secret-key-change-this
+    ALGORITHM=HS256
+    ACCESS_TOKEN_EXPIRE_MINUTES=30
+    REFRESH_TOKEN_EXPIRE_DAYS=7
+    
+    # Model Settings
+    OLLAMA_HOST=http://ollama-service:11434
+    HF_LOCAL_HOST=http://hf-service:8080
+    DEFAULT_MODEL_PROVIDER=openai
+    DEFAULT_MODEL_NAME=gpt-4
+    DEFAULT_TEMPERATURE=0.7
+    DEFAULT_MAX_TOKENS=2048
+    
+    # Rate Limiting
+    RATE_LIMIT_REQUESTS=1000
+    RATE_LIMIT_WINDOW=60
+    
+    # Cost Tracking
+    COST_TRACKING_ENABLED=true
+    MONTHLY_COST_LIMIT=5000.0
+    
+    # WebSocket
+    WS_HEARTBEAT_INTERVAL=30
+    WS_MAX_CONNECTIONS=1000
+    
+    # Logging
+    LOG_LEVEL=INFO
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-api-secret
+  namespace: llm-system
+type: Opaque
+data:
+  # Base64 encoded API keys - configure these in production
+  openai-api-key: ""  # Add your OpenAI API key
+  anthropic-api-key: ""  # Add your Anthropic API key
+  google-api-key: ""  # Add your Google API key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-api
+  namespace: llm-system
+  labels:
+    app: llm-api
+    component: backend
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: llm-api
+  template:
+    metadata:
+      labels:
+        app: llm-api
+        component: backend
+    spec:
+      initContainers:
+      - name: wait-for-db
+        image: postgres:15-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h postgres-service -p 5432 -U llm_user; do
+            echo "Waiting for database..."
+            sleep 2
+          done
+          echo "Database is ready!"
+      - name: wait-for-redis
+        image: redis:7-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until redis-cli -h redis-service -p 6379 ping; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+          echo "Redis is ready!"
+      containers:
+      - name: llm-api
+        image: llm-system/api:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-api-secret
+              key: openai-api-key
+              optional: true
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-api-secret
+              key: anthropic-api-key
+              optional: true
+        - name: GOOGLE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-api-secret
+              key: google-api-key
+              optional: true
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2
+            memory: 4Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /app/.env
+          subPath: .env
+          readOnly: true
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+        - name: model-data
+          mountPath: /var/lib/llm-models
+      volumes:
+      - name: config
+        configMap:
+          name: llm-api-config
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+      - name: model-data
+        persistentVolumeClaim:
+          claimName: model-data-pvc
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      serviceAccountName: llm-api-service-account
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-api-service
+  namespace: llm-system
+  labels:
+    app: llm-api
+    component: backend
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: llm-api
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-data-pvc
+  namespace: llm-system
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: fast-ssd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: llm-api-service-account
+  namespace: llm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: llm-api-docker-access
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: llm-api-docker-access
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: llm-api-docker-access
+subjects:
+- kind: ServiceAccount
+  name: llm-api-service-account
+  namespace: llm-system

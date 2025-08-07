@@ -1,0 +1,60 @@
+# Multi-stage Dockerfile for Monitoring and Alerting System
+FROM python:3.11-slim as base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up Python environment
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+WORKDIR /app
+
+# Install Python dependencies (cached layer)
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Install monitoring-specific dependencies
+RUN pip install --no-cache-dir \
+    prometheus-client==0.18.0 \
+    psutil==5.9.5 \
+    aiohttp==3.8.6 \
+    grafana-client==4.0.0
+
+# Build stage
+FROM base as builder
+
+# Copy source code
+COPY backend/app /app/app
+COPY backend/main.py /app/
+
+# Production stage
+FROM base as production
+
+# Copy application files
+COPY --from=builder /app/app /app/app
+COPY --from=builder /app/main.py /app/
+
+# Create monitoring directories
+RUN mkdir -p /var/metrics /var/dashboards /var/alerts && \
+    chmod 755 /var/metrics /var/dashboards /var/alerts
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash --uid 1000 appuser && \
+    chown -R appuser:appuser /app /var/metrics /var/dashboards /var/alerts
+
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Expose ports
+EXPOSE 8080 9090
+
+# Start application
+CMD ["python", "-m", "app.services.monitoring_alerting_system"]

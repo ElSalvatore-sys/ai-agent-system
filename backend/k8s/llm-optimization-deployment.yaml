@@ -1,0 +1,793 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-optimization
+  labels:
+    name: llm-optimization
+    environment: production
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-optimization-config
+  namespace: llm-optimization
+data:
+  # Model Loading Configuration
+  model_loading.yaml: |
+    lazy_unload_timeout: 600
+    batch_timeout: 0.1
+    max_memory_usage: 0.8
+    quantization_cache_dir: /var/cache/llm-quantized
+    warmup_cache_dir: /var/cache/llm-warmup
+    default_quantization: int8
+    max_batch_size: 4
+
+  # GPU/CPU Optimization Configuration
+  gpu_optimization.yaml: |
+    memory_safety_margin: 0.1
+    gpu_utilization_threshold: 0.8
+    temperature_threshold: 85.0
+    cuda_memory_fraction: 0.9
+    enable_tf32: true
+    enable_cudnn_benchmark: true
+    nccl_timeout_seconds: 600
+
+  # Caching Configuration
+  caching.yaml: |
+    max_memory_cache_size: 1000
+    max_model_weight_cache_gb: 50.0
+    semantic_similarity_threshold: 0.8
+    predictive_cache_enabled: true
+    compression_threshold: 1024
+
+  # Auto-scaling Configuration
+  autoscaling.yaml: |
+    default_cpu_threshold_up: 70.0
+    default_cpu_threshold_down: 30.0
+    default_memory_threshold_up: 80.0
+    default_memory_threshold_down: 40.0
+    default_cooldown_seconds: 300
+    max_scaling_actions_per_hour: 10
+    prediction_horizon_minutes: 60
+    cost_budget_hourly: 100.0
+
+  # Monitoring Configuration
+  monitoring.yaml: |
+    metrics_retention_hours: 168
+    optimization_interval_minutes: 60
+    dashboard_refresh_interval: 30
+    prometheus_port: 9090
+    alert_evaluation_interval: 60
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-optimization-secrets
+  namespace: llm-optimization
+type: Opaque
+data:
+  # Base64 encoded secrets
+  redis_password: ""
+  slack_webhook_url: ""
+  openai_api_key: ""
+  anthropic_api_key: ""
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache-pvc
+  namespace: llm-optimization
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: fast-ssd
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deployment-artifacts-pvc
+  namespace: llm-optimization
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: standard
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-loading-optimizer
+  namespace: llm-optimization
+  labels:
+    app: model-loading-optimizer
+    component: optimization
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: model-loading-optimizer
+  template:
+    metadata:
+      labels:
+        app: model-loading-optimizer
+        component: optimization
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: optimizer
+        image: llm-optimization/model-loading-optimizer:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: llm-optimization-secrets
+              key: redis_password
+        - name: QUANTIZATION_CACHE_DIR
+          value: "/var/cache/llm-quantized"
+        - name: WARMUP_CACHE_DIR
+          value: "/var/cache/llm-warmup"
+        volumeMounts:
+        - name: model-cache
+          mountPath: /var/cache
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache-pvc
+      - name: config
+        configMap:
+          name: llm-optimization-config
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-cpu-optimizer
+  namespace: llm-optimization
+  labels:
+    app: gpu-cpu-optimizer
+    component: optimization
+spec:
+  replicas: 1  # Single instance for GPU coordination
+  selector:
+    matchLabels:
+      app: gpu-cpu-optimizer
+  template:
+    metadata:
+      labels:
+        app: gpu-cpu-optimizer
+        component: optimization
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      nodeSelector:
+        accelerator: nvidia-tesla-k80  # Target GPU nodes
+      containers:
+      - name: optimizer
+        image: llm-optimization/gpu-cpu-optimizer:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: CUDA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "compute,utility"
+        securityContext:
+          privileged: true  # Required for GPU access
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+            nvidia.com/gpu: 0  # Monitor GPUs but don't reserve
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: dev
+          mountPath: /dev
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: llm-optimization-config
+      - name: dev
+        hostPath:
+          path: /dev
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: advanced-caching-system
+  namespace: llm-optimization
+  labels:
+    app: advanced-caching-system
+    component: caching
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: advanced-caching-system
+  template:
+    metadata:
+      labels:
+        app: advanced-caching-system
+        component: caching
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      containers:
+      - name: caching
+        image: llm-optimization/advanced-caching:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: llm-optimization-secrets
+              key: redis_password
+        volumeMounts:
+        - name: model-cache
+          mountPath: /var/cache
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache-pvc
+      - name: config
+        configMap:
+          name: llm-optimization-config
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auto-scaling-system
+  namespace: llm-optimization
+  labels:
+    app: auto-scaling-system
+    component: scaling
+spec:
+  replicas: 1  # Single instance for coordination
+  selector:
+    matchLabels:
+      app: auto-scaling-system
+  template:
+    metadata:
+      labels:
+        app: auto-scaling-system
+        component: scaling
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: auto-scaling-service-account
+      containers:
+      - name: scaling
+        image: llm-optimization/auto-scaling:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: KUBERNETES_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: llm-optimization-config
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-automation
+  namespace: llm-optimization
+  labels:
+    app: deployment-automation
+    component: cicd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deployment-automation
+  template:
+    metadata:
+      labels:
+        app: deployment-automation
+        component: cicd
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: deployment-automation-service-account
+      containers:
+      - name: automation
+        image: llm-optimization/deployment-automation:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: DOCKER_HOST
+          value: "tcp://docker-dind:2376"
+        - name: DOCKER_TLS_VERIFY
+          value: "1"
+        - name: DOCKER_CERT_PATH
+          value: "/certs/client"
+        volumeMounts:
+        - name: deployment-artifacts
+          mountPath: /var/deployment-artifacts
+        - name: docker-certs
+          mountPath: /certs/client
+          readOnly: true
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      - name: docker-dind
+        image: docker:dind
+        securityContext:
+          privileged: true
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: "/certs"
+        volumeMounts:
+        - name: docker-certs
+          mountPath: /certs/client
+        - name: docker-storage
+          mountPath: /var/lib/docker
+      volumes:
+      - name: deployment-artifacts
+        persistentVolumeClaim:
+          claimName: deployment-artifacts-pvc
+      - name: docker-certs
+        emptyDir: {}
+      - name: docker-storage
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: llm-optimization-config
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring-alerting-system
+  namespace: llm-optimization
+  labels:
+    app: monitoring-alerting-system
+    component: monitoring
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: monitoring-alerting-system
+  template:
+    metadata:
+      labels:
+        app: monitoring-alerting-system
+        component: monitoring
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      containers:
+      - name: monitoring
+        image: llm-optimization/monitoring-alerting:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: llm-optimization-secrets
+              key: slack_webhook_url
+              optional: true
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: llm-optimization-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-loading-optimizer-service
+  namespace: llm-optimization
+  labels:
+    app: model-loading-optimizer
+spec:
+  selector:
+    app: model-loading-optimizer
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-cpu-optimizer-service
+  namespace: llm-optimization
+  labels:
+    app: gpu-cpu-optimizer
+spec:
+  selector:
+    app: gpu-cpu-optimizer
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: advanced-caching-service
+  namespace: llm-optimization
+  labels:
+    app: advanced-caching-system
+spec:
+  selector:
+    app: advanced-caching-system
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auto-scaling-service
+  namespace: llm-optimization
+  labels:
+    app: auto-scaling-system
+spec:
+  selector:
+    app: auto-scaling-system
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deployment-automation-service
+  namespace: llm-optimization
+  labels:
+    app: deployment-automation
+spec:
+  selector:
+    app: deployment-automation
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monitoring-alerting-service
+  namespace: llm-optimization
+  labels:
+    app: monitoring-alerting-system
+spec:
+  selector:
+    app: monitoring-alerting-system
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: auto-scaling-service-account
+  namespace: llm-optimization
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: auto-scaling-cluster-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: auto-scaling-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: auto-scaling-cluster-role
+subjects:
+- kind: ServiceAccount
+  name: auto-scaling-service-account
+  namespace: llm-optimization
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployment-automation-service-account
+  namespace: llm-optimization
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deployment-automation-cluster-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: deployment-automation-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: deployment-automation-cluster-role
+subjects:
+- kind: ServiceAccount
+  name: deployment-automation-service-account
+  namespace: llm-optimization
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: model-loading-optimizer-hpa
+  namespace: llm-optimization
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: model-loading-optimizer
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: model-loading-optimizer-pdb
+  namespace: llm-optimization
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: model-loading-optimizer
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-optimization-network-policy
+  namespace: llm-optimization
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: llm-optimization
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: llm-optimization
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 6379  # Redis

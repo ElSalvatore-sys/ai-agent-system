@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test React Render</title>
+</head>
+<body>
+    <h1>Testing if React is rendering...</h1>
+    
+    <script>
+        // Test if the root div gets populated
+        fetch('http://localhost:3000')
+            .then(response => response.text())
+            .then(html => {
+                console.log('HTML received:', html.length, 'characters');
+                
+                // Test if we can load main.tsx
+                return fetch('http://localhost:3000/src/main.tsx');
+            })
+            .then(response => response.text())
+            .then(js => {
+                console.log('JavaScript loaded:', js.includes('ReactDOM.createRoot'));
+                
+                // Create iframe to test rendering
+                const iframe = document.createElement('iframe');
+                iframe.src = 'http://localhost:3000';
+                iframe.style.width = '800px';
+                iframe.style.height = '600px';
+                iframe.style.border = '1px solid #ccc';
+                document.body.appendChild(iframe);
+                
+                // Check if React renders after a delay
+                setTimeout(() => {
+                    try {
+                        const doc = iframe.contentDocument || iframe.contentWindow.document;
+                        const root = doc.getElementById('root');
+                        console.log('Root element children:', root ? root.children.length : 'not found');
+                        console.log('Root innerHTML length:', root ? root.innerHTML.length : 0);
+                        if (root && root.innerHTML.length === 0) {
+                            console.log('❌ React not rendering - root div is empty');
+                        } else {
+                            console.log('✅ React is rendering - root has content');
+                        }
+                    } catch (e) {
+                        console.log('Cannot access iframe content (CORS):', e.message);
+                    }
+                }, 3000);
+            })
+            .catch(err => console.error('Error:', err));
+    </script>
+</body>
+</html>
